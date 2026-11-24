@@ -1,0 +1,166 @@
+name: Build and release Music-check
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read application version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          ref = os.environ['GITHUB_REF']
+          source = Path('tools/windows-check/update.go').read_text(encoding='utf-8')
+          version = ref.removeprefix('refs/tags/v') if ref.startswith('refs/tags/v') else re.search(r'appVersion\s*=\s*"([0-9.]+)"', source).group(1)
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
+              raise SystemExit('Version must be X.Y.Z')
+          with open(os.environ['GITHUB_ENV'], 'a') as target:
+              target.write('VERSION=' + version + '\n')
+          PY
+      - name: Download verified FFmpeg 9.1
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          $archive = 'build/ffmpeg-9.1-essentials_build.zip'
+          Invoke-WebRequest 'https://github.com/CanICallYouJim/s-curve-4s/releases/download/build-tools-9.1/ffmpeg-windows-9.1.zip' -OutFile $archive
+          $expected = 'b9bbbb3acece000cbeec994f856649354e52c773807841e78908374b24d658fd'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'FFmpeg checksum mismatch' }
+          [IO.File]::WriteAllText((Join-Path $PWD ($archive + '.sha256')), $expected)
+      - name: Make verified audio tools available for tests
+        shell: pwsh
+        run: |
+          Expand-Archive build/ffmpeg-9.1-essentials_build.zip build/ffmpeg
+          $bin = (Get-ChildItem build/ffmpeg -Filter ffmpeg.exe -Recurse | Select-Object -First 1).DirectoryName
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build Windows EXE
+        shell: pwsh
+        run: python tools/windows-check/build.py build/ffmpeg-9.1-essentials_build.zip dist/Music-check-Windows.exe --version $env:VERSION
+      - name: Test startup, real dialog, history and updater
+        shell: pwsh
+        run: |
+          go -C tools/windows-check test -short -count=1 -timeout 5m ./...
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/Music-check-Windows.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read application version
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          ref = os.environ['GITHUB_REF']
+          source = Path('tools/windows-check/update.go').read_text(encoding='utf-8')
+          version = ref.removeprefix('refs/tags/v') if ref.startswith('refs/tags/v') else re.search(r'appVersion\s*=\s*"([0-9.]+)"', source).group(1)
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
+              raise SystemExit('Version must be X.Y.Z')
+          with open(os.environ['GITHUB_ENV'], 'a') as target:
+              target.write('VERSION=' + version + '\n')
+          PY
+      - name: Download verified static FFmpeg 9.1 for both architectures
+        run: |
+          python - <<'PY'
+          import hashlib, subprocess, zipfile
+          from pathlib import Path
+          sources = {
+              'amd64': ('1795212433_9.1', {
+                  'ffmpeg': '35b3d82cccc2c1d644d49d15f5e57eb913a08ef68f798042c90eecec62c51f1e',
+                  'ffprobe': '41ca7b7cba7992e33f1da3f1bf54db8ec103a4d387b1bfac3162062e8b1074ad'}),
+              'arm64': ('1795207104_9.1', {
+                  'ffmpeg': '1f66e9a690a7f1c9e60b012379f8869c11818d1797f45b21dbb2f2564ba61ae1',
+                  'ffprobe': '6ef2df5f575042923a28537ab37adf936f28bf3e7b85de23a1447ed447ec1dbd'})}
+          for arch, (release, binaries) in sources.items():
+              folder = Path('build/tools') / arch
+              folder.mkdir(parents=True, exist_ok=True)
+              for name, checksum in binaries.items():
+                  url = f'https://github.com/CanICallYouJim/s-curve-4s/releases/download/build-tools-9.1/{name}-macos-{arch}-9.1.zip'
+                  archive = folder / (name + '.zip')
+                  subprocess.run(['curl', '--fail', '--location', '--retry', '3', '--max-time', '180', '--output', str(archive), url], check=True)
+                  if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
+                      raise SystemExit('FFmpeg checksum mismatch: ' + str(archive))
+                  (folder / (name + '.zip.sha256')).write_text(checksum)
+                  with zipfile.ZipFile(archive) as source:
+                      binary = folder / name
+                      binary.write_bytes(source.read(name))
+                      binary.chmod(0o755)
+          PY
+      - name: Make verified audio tools available for tests
+        run: echo "$PWD/build/tools/amd64" >> "$GITHUB_PATH"
+      - name: Test backend and updater
+        run: |
+          go -C tools/windows-check test -short -count=1 -timeout 5m ./...
+          node tools/windows-check/health_player_test.js
+      - name: Build universal Mac application
+        run: python tools/macos-check/build.py build/tools 'dist/Music-check.app' --version "$VERSION"
+      - name: Test native application and signature
+        run: |
+          'dist/Music-check.app/Contents/MacOS/MusicCheck' --self-test
+          codesign --verify --deep --strict 'dist/Music-check.app'
+          for binary in 'Contents/MacOS/MusicCheck' 'Contents/MacOS/music-check-engine' 'Contents/Resources/tools/ffmpeg' 'Contents/Resources/tools/ffprobe'; do
+            lipo -verify_arch x86_64 arm64 "dist/Music-check.app/$binary"
+          done
+      - name: Package update archive
+        run: python tools/check-release/package_macos.py 'dist/Music-check.app' dist/Music-check-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/Music-check-macOS.zip
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Make update manifest
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: python tools/check-release/make_manifest.py "$TAG" --repository "$REPOSITORY" --windows dist/Music-check-Windows.exe --macos dist/Music-check-macOS.zip --output dist/update.json
+      - name: Publish release and updater assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/Music-check-Windows.exe dist/Music-check-macOS.zip dist/update.json --verify-tag --title "Проверка музыки $TAG" --generate-notes

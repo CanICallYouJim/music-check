@@ -1,0 +1,7 @@
+out/
+dist/
+build/
+__pycache__/
+*.pyc
+**/payload.zip
+.DS_Store
