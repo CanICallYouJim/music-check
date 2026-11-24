@@ -211,7 +211,7 @@ func TestAudioPolicyLimitsAreTechnical(t *testing.T) {
 }
 
 func TestAudioPolicyTextFrameFailuresStayTechnical(t *testing.T) {
-	for _, line := range []string{"[warning] Unknown encoding 9", "[mp3] [warning] Unknown encoding 9", "[mp3] [error] Error reading frame TIT2, skipped", "[error] Cannot read BOM value, input too short"} {
+	for _, line := range []string{"[mp3] [error] Incorrect BOM value: 0x7800", "[warning] Unknown encoding 9", "[mp3] [warning] Unknown encoding 9", "[mp3] [error] Error reading frame TIT2, skipped", "[error] Cannot read BOM value, input too short"} {
 		r := healthyResult()
 		r.Issues = []healthIssue{{Kind: "decoder_warning", Severity: "warning", Detail: line}}
 		if healthStatus(audioOnlyResult(r)) != "clean" {
@@ -225,5 +225,28 @@ func TestAudioPolicyTextFrameFailuresStayTechnical(t *testing.T) {
 	r.Issues = []healthIssue{{Kind: "decode_error", Severity: "error", Detail: "unlocated error"}, {Kind: "decoder_log", Severity: "info", Detail: "[mp3] [error] Error reading frame TIT2, skipped"}}
 	if !needsAudioPolicyReview(r) {
 		t.Fatal("old metadata error without completed signal analysis was reused")
+	}
+}
+
+func TestAudioPolicyFFmpeg91MetadataCacheMigration(t *testing.T) {
+	r := healthyResult()
+	r.AudioPolicy = 2
+	r.Issues = []healthIssue{{Kind: "decode_error", Severity: "error"}, {Kind: "decoder_log", Severity: "info", Detail: "[error] Incorrect BOM value: 0x7800\n[error] Error reading comment frame, skipped"}}
+	if !needsAudioPolicyReview(r) {
+		t.Fatal("old false metadata error was kept")
+	}
+	for _, line := range []string{"Incorrect BOM value: 0x7800 Header missing", "Incorrect BOM value: 0x780000", "Incorrect BOM value: not audio", "Header missing"} {
+		if textMetadataMessage(line) {
+			t.Fatalf("unsafe BOM match: %s", line)
+		}
+	}
+	r.Issues[1].Detail += "\n[error] Header missing"
+	if needsAudioPolicyReview(r) {
+		t.Fatal("mixed audio error treated as metadata-only")
+	}
+	at := r.Duration
+	r.Issues = []healthIssue{{Kind: "decode_error", Severity: "error", Start: &at}}
+	if needsAudioPolicyReview(r) {
+		t.Fatal("version 2 real EOF error was needlessly rechecked")
 	}
 }

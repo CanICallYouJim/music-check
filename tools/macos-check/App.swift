@@ -185,7 +185,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var updateAvailable = false
     private var cachedTarget = ""
     private var openingUpdate = false
-    private var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0" }
+    private var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.1" }
     private var busy: Bool { process != nil || updateProcess != nil || openingUpdate }
     private var history: [String] {
         get { UserDefaults.standard.stringArray(forKey: "RecentMusicFolders") ?? [] }

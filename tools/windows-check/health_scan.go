@@ -18,7 +18,7 @@ import (
 const checkFolder = "Проверка музыки"
 const checkVersion = "music-health-2"
 const checkCacheFolder = "cache"
-const audioOnlyPolicyVersion = 2
+const audioOnlyPolicyVersion = 3
 
 type healthIssue struct {
 	Kind     string   `json:"kind"`

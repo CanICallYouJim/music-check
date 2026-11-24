@@ -7,6 +7,7 @@ import (
 )
 
 var textFrameError = regexp.MustCompile(`^Error reading frame [A-Z0-9]{3,4}, skipped$`)
+var textBOMError = regexp.MustCompile(`^Incorrect BOM value: 0x[0-9a-fA-F]{4}$`)
 var textEncodingError = regexp.MustCompile(`^Unknown encoding [0-9]+$`)
 
 func diagnosticMessage(line string) string {
@@ -23,7 +24,7 @@ func diagnosticMessage(line string) string {
 
 func textMetadataMessage(line string) bool {
 	message := diagnosticMessage(line)
-	if textFrameError.MatchString(message) {
+	if textFrameError.MatchString(message) || textBOMError.MatchString(message) {
 		return true
 	}
 	if textEncodingError.MatchString(message) {
@@ -86,6 +87,10 @@ func needsAudioPolicyReview(result healthResult) bool {
 	}
 	if hasTextLog && hasError {
 		return true
+	}
+	// Version 2 already reviewed EOF padding; version 3 only adds FFmpeg 9.1 text diagnostics.
+	if result.AudioPolicy >= 2 {
+		return false
 	}
 	for _, issue := range result.Issues {
 		if issue.Severity != "info" && (issue.Kind == "packet_gap" || issue.Kind == "decode_error") && issue.Start != nil && *issue.Start >= result.Duration-.001 {
