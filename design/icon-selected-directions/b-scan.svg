@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Проверка музыки — волна со сканирующей линией</title>
+  <g id="symbol" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="#74f4cf" stroke-width="52" d="M155 515 C185 515 215 465 235 465 C278 465 290 645 338 645 C386 645 399 329 452 329 C507 329 510 695 568 695 C620 695 630 386 685 386 C732 386 755 560 795 560 C826 560 840 515 870 515"/>
+    <path stroke="#eefafa" stroke-width="36" d="M615 240 V785 M555 240 H675 M555 785 H675"/>
+  </g>
+</svg>

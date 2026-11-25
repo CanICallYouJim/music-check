@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Проверка музыки — лупа со звуковыми столбиками</title>
+  <g id="symbol">
+    <path fill="#74f4cf" fill-rule="evenodd" d="M445 190 A240 240 0 0 1 636.43 574.76 L838.33 776.67 A33 33 0 0 1 791.67 823.33 L589.76 621.43 A240 240 0 1 1 445 190 Z M445 250 A180 180 0 1 0 445 610 A180 180 0 1 0 445 250 Z"/>
+    <g fill="#eefafa">
+      <rect x="309" y="395" width="32" height="70" rx="16"/>
+      <rect x="369" y="355" width="32" height="150" rx="16"/>
+      <rect x="429" y="310" width="32" height="240" rx="16"/>
+      <rect x="489" y="355" width="32" height="150" rx="16"/>
+      <rect x="549" y="395" width="32" height="70" rx="16"/>
+    </g>
+  </g>
+</svg>
