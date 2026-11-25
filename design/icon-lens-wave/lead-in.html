@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверка музыки · начало волны</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #edf1f4; color: #142d3d; font: 16px system-ui, sans-serif; }
+    main { max-width: 1056px; margin: auto; padding: 34px 28px; }
+    h1 { margin: 0 0 24px; font-size: clamp(24px, 4vw, 32px); letter-spacing: -.025em; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    article { padding: 22px; border: 1px solid #d9e2e8; border-radius: 19px; background: #fff; }
+    h2 { margin: 0 0 18px; font-size: 18px; }
+    img { display: block; }
+    .large { width: min(100%, 208px); height: auto; margin: 0 auto 22px; }
+    .sizes { display: flex; align-items: end; justify-content: center; gap: 20px; border-top: 1px solid #e0e7ec; padding-top: 16px; }
+    figure { display: grid; justify-items: center; gap: 8px; margin: 0; }
+    figcaption { color: #526675; font-size: 11px; }
+    @media (max-width: 740px) {
+      main { max-width: 440px; padding: 24px 16px; }
+      .cards { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Проверка музыки · начало волны</h1>
+    <div class="cards">
+      <article>
+        <h2>Текущий эскиз</h2>
+        <img class="large" src="point.svg" width="208" height="208" alt="Текущая волна с короткими частыми изгибами слева">
+        <div class="sizes">
+          <figure><img src="point.svg" width="64" height="64" alt=""><figcaption>64 px</figcaption></figure>
+          <figure><img src="point.svg" width="32" height="32" alt=""><figcaption>32 px</figcaption></figure>
+          <figure><img src="point.svg" width="16" height="16" alt=""><figcaption>16 px</figcaption></figure>
+        </div>
+      </article>
+      <article>
+        <h2>A. Первый изгиб вверх</h2>
+        <img class="large" src="lead-in-a.svg" width="208" height="208" alt="После ровного входа волна поднимается и делает небольшой изгиб перед глубокой впадиной">
+        <div class="sizes">
+          <figure><img src="lead-in-a.svg" width="64" height="64" alt=""><figcaption>64 px</figcaption></figure>
+          <figure><img src="lead-in-a.svg" width="32" height="32" alt=""><figcaption>32 px</figcaption></figure>
+          <figure><img src="lead-in-a.svg" width="16" height="16" alt=""><figcaption>16 px</figcaption></figure>
+        </div>
+      </article>
+      <article>
+        <h2>B. Первый изгиб вниз</h2>
+        <img class="large" src="lead-in-b.svg" width="208" height="208" alt="После ровного входа волна опускается, поднимается и переходит к глубокой впадине">
+        <div class="sizes">
+          <figure><img src="lead-in-b.svg" width="64" height="64" alt=""><figcaption>64 px</figcaption></figure>
+          <figure><img src="lead-in-b.svg" width="32" height="32" alt=""><figcaption>32 px</figcaption></figure>
+          <figure><img src="lead-in-b.svg" width="16" height="16" alt=""><figcaption>16 px</figcaption></figure>
+        </div>
+      </article>
+    </div>
+  </main>
+</body>
+</html>

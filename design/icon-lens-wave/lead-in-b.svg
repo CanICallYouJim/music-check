@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Лупа с волной с первым изгибом вниз</title>
+  <rect width="256" height="256" rx="58" fill="#142d3d"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="#74f4cf" stroke-width="15" d="M158 156 207 205"/>
+    <circle cx="112" cy="110" r="64" stroke="#74f4cf" stroke-width="15"/>
+    <path stroke="#eefafa" stroke-width="8" d="M67 114 H77 C81 114 82 126 86 126 C92 126 91 101 97 101 C104 101 104 143 110 143 C117 143 116 79 126 79 C136 79 135 128 143 128 C149 128 147 107 152 107 C155 107 156 112 158 114"/>
+  </g>
+  <circle cx="126" cy="79" r="11" fill="#74f4cf" stroke="#142d3d" stroke-width="4"/>
+</svg>
