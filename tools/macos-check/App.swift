@@ -17,7 +17,9 @@ struct CheckResult: Decodable {
     let total, checked, fresh, cached, errors, warnings, incomplete: Int
     let interrupted: Bool
     let error: String
+    var report_interrupted: Bool? = nil
     var message: String {
+        if report_interrupted == true { return "Результаты проверки сохранены. Подготовка фрагментов остановлена; откройте отчёт." }
         if interrupted && output.isEmpty { return "Проверка остановлена. Можно запустить её снова." }
         if interrupted { return "Остановлено. Проверено: \(checked) из \(total). Готовые результаты сохранены." }
         if error.contains("operation not permitted") || error.contains("permission denied") {
@@ -160,6 +162,105 @@ func versionBanner(_ update: UpdateStatus, fallback: String) -> String {
 }
 
 
+struct CheckProgress {
+    let message: String
+    let percent: Double?
+}
+
+// The process pipe may split a UTF-8 character or a progress line between reads.
+struct CheckProgressParser {
+    private var pending = Data()
+    private var discardingLine = false
+    private var reportStarted = false
+    private var reportPercent = 0
+    mutating func append(_ data: Data, finished: Bool = false) -> [CheckProgress] {
+        pending.append(data)
+        var updates: [CheckProgress] = []
+        while let newline = pending.firstIndex(of: 10) {
+            let line = String(decoding: pending[..<newline], as: UTF8.self).trimmingCharacters(in: .newlines)
+            pending.removeSubrange(...newline)
+            if !discardingLine, let update = parse(line) { updates.append(update) }
+            discardingLine = false
+        }
+        if finished && !pending.isEmpty {
+            if !discardingLine, let update = parse(String(decoding: pending, as: UTF8.self)) { updates.append(update) }
+            pending.removeAll()
+        } else if pending.count > 65_536 {
+            pending.removeAll()
+            discardingLine = true
+        }
+        return updates
+    }
+    private mutating func parse(_ line: String) -> CheckProgress? {
+        let prefix = "[Отчёт "
+        if line.hasPrefix(prefix), let closing = line.range(of: "%]"),
+           let value = Int(line[line.index(line.startIndex, offsetBy: prefix.count)..<closing.lowerBound]), (0...100).contains(value) {
+            reportStarted = true
+            reportPercent = max(reportPercent, value)
+            let detail = line[closing.upperBound...].trimmingCharacters(in: .whitespaces)
+            return CheckProgress(message: "Отчёт: \(reportPercent)% · \(detail)", percent: Double(reportPercent))
+        }
+        if line.hasPrefix("Подготовка встроенных фрагментов") {
+            reportStarted = true
+            return CheckProgress(message: "Готовим отчёт и короткие фрагменты для прослушивания…", percent: Double(reportPercent))
+        }
+        guard !reportStarted, line.hasPrefix("["), let closing = line.firstIndex(of: "]") else { return nil }
+        let counts = line[line.index(after: line.startIndex)..<closing].split(separator: "/")
+        guard counts.count == 2, let current = Int(counts[0]), let total = Int(counts[1]), current > 0, current <= total else { return nil }
+        return CheckProgress(message: "Проверяем запись \(current) из \(total). Неизменившиеся записи берём из истории.", percent: nil)
+    }
+}
+
+// Keep the most recent diagnostics on the Mac, even after the window closes.
+// Compact by 2 MiB only at the limit, rather than rewriting on every pipe read.
+final class CheckLogWriter {
+    static let limit = 4 * 1024 * 1024
+    private let file: FileHandle
+    private var size = 0
+    private let lock = NSLock()
+    init(url: URL) throws {
+        let folder = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let attributes = try FileManager.default.attributesOfItem(atPath: folder.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        // Atomic replacement avoids truncating a prior log linked to another file.
+        try Data().write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        file = try FileHandle(forUpdating: url)
+    }
+    func append(_ data: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if data.count >= Self.limit {
+            try file.truncate(atOffset: 0)
+            try file.seek(toOffset: 0)
+            let tail = Data(data.suffix(Self.limit))
+            try file.write(contentsOf: tail)
+            size = tail.count
+        } else {
+            if size + data.count > Self.limit {
+                let keep = min(size, min(Self.limit / 2, Self.limit - data.count))
+                try file.seek(toOffset: UInt64(size - keep))
+                let tail = try file.readToEnd() ?? Data()
+                try file.truncate(atOffset: 0)
+                try file.seek(toOffset: 0)
+                try file.write(contentsOf: tail)
+                size = tail.count
+            }
+            try file.seekToEnd()
+            try file.write(contentsOf: data)
+            size += data.count
+        }
+    }
+    func close() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try file.close()
+    }
+}
+
 final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow!
     private let folders = FolderBox(frame: NSRect(x: 28, y: 434, width: 486, height: 28))
@@ -172,11 +273,16 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var start: NSButton!
     private var stop: NSButton!
     private var report: NSButton!
+    private var journal: NSButton!
     private var process: Process?
     private var reportURL: URL?
     private var pendingFolder: URL?
     private var quitAfterStop = false
     private var logBytes = Data()
+    private var progressParser = CheckProgressParser()
+    private var checkLogWriter: CheckLogWriter?
+    private var logWriteFailed = false
+    private var checkLogURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/MusicCheck/last-check.log") }
     private var versionLabel: NSTextField!
     private var updateBanner: NSView!
     private var updateButton: NSButton!
@@ -185,7 +291,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var updateAvailable = false
     private var cachedTarget = ""
     private var openingUpdate = false
-    private var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.2" }
+    private var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.3" }
     private var busy: Bool { process != nil || updateProcess != nil || openingUpdate }
     private var history: [String] {
         get { UserDefaults.standard.stringArray(forKey: "RecentMusicFolders") ?? [] }
@@ -240,6 +346,9 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let details = NSButton(checkboxWithTitle: "Показать технические подробности", target: self, action: #selector(toggleDetails(_:)))
         details.frame = NSRect(x: 28, y: 288, width: 440, height: 24)
         root.addSubview(details)
+        journal = button("Открыть журнал", frame: NSRect(x: 490, y: 284, width: 142, height: 30), action: #selector(openJournal))
+        journal.isEnabled = FileManager.default.fileExists(atPath: checkLogURL.path)
+        journal.toolTip = "Журнал последней проверки сохраняется на этом Mac, а не на флешке."
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         scroll.isHidden = true
@@ -347,6 +456,17 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         task.standardInput = FileHandle.nullDevice
         logBytes.removeAll()
         log.string = ""
+        progressParser = CheckProgressParser()
+        logWriteFailed = false
+        journal.title = "Открыть журнал"
+        do {
+            checkLogWriter = try CheckLogWriter(url: checkLogURL)
+            journal.isEnabled = true
+        } catch {
+            checkLogWriter = nil
+            recordLogFailure(error)
+        }
+        let writer = checkLogWriter
         reportURL = nil
         report.isEnabled = false
         do { try task.run() }
@@ -354,6 +474,8 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             try? FileManager.default.removeItem(at: temp)
             status.stringValue = "Не удалось запустить проверку. Причина — в подробностях."
             appendLog(Data("\(error)\n".utf8))
+            try? checkLogWriter?.close()
+            checkLogWriter = nil
             return
         }
         process = task
@@ -365,32 +487,61 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             while true {
                 let data = pipe.fileHandleForReading.availableData
                 if data.isEmpty { break }
-                DispatchQueue.main.async { [weak self] in self?.appendLog(data) }
+                var writeError: Error?
+                do { try writer?.append(data) } catch { writeError = error }
+                DispatchQueue.main.async { [weak self] in
+                    self?.appendLog(data, persist: false)
+                    if let writeError { self?.recordLogFailure(writeError) }
+                }
             }
             task.waitUntilExit()
+            var closeError: Error?
+            do { try writer?.close() } catch { closeError = error }
             let result = (try? Data(contentsOf: resultURL)).flatMap { try? JSONDecoder().decode(CheckResult.self, from: $0) }
             try? FileManager.default.removeItem(at: temp)
-            DispatchQueue.main.async { [weak self] in self?.finished(result) }
+            DispatchQueue.main.async { [weak self] in
+                self?.checkLogWriter = nil
+                if let closeError { self?.recordLogFailure(closeError) }
+                self?.applyProgress(self?.progressParser.append(Data(), finished: true) ?? [])
+                self?.finished(result)
+            }
         }
     }
-    private func appendLog(_ data: Data) {
+    private func recordLogFailure(_ error: Error) {
+        guard !logWriteFailed else { return }
+        logWriteFailed = true
+        journal.title = "Журнал недоступен"
+        journal.isEnabled = false
+        journal.toolTip = "Не удалось сохранить журнал. Подробности пока доступны в этом окне."
+        appendLog(Data("Не удалось сохранить журнал: \(error)\n".utf8), persist: false)
+    }
+    private func applyProgress(_ updates: [CheckProgress]) {
+        guard process != nil, stop.isEnabled else { return }
+        for update in updates {
+            status.stringValue = update.message
+            status.toolTip = update.message
+            if let percent = update.percent {
+                progress.stopAnimation(nil)
+                progress.isIndeterminate = false
+                progress.isDisplayedWhenStopped = true
+                progress.isHidden = false
+                progress.minValue = 0
+                progress.maxValue = 100
+                progress.doubleValue = percent
+            }
+        }
+    }
+    private func appendLog(_ data: Data, persist: Bool = true) {
+        if persist {
+            do { try checkLogWriter?.append(data) } catch { recordLogFailure(error) }
+        }
         logBytes.append(data)
         if logBytes.count > 262_144 { logBytes.removeFirst(logBytes.count - 262_144) }
         log.string = String(decoding: logBytes, as: UTF8.self)
         log.scrollToEndOfDocument(nil)
-        if busy && stop.isEnabled {
-            let lines = log.string.components(separatedBy: "\n")
-            if let line = lines.last(where: { $0.hasPrefix("[") }), let end = line.firstIndex(of: "]") {
-                let counts = line[line.index(after: line.startIndex)..<end].split(separator: "/")
-                if counts.count == 2, let current = Int(counts[0]), let total = Int(counts[1]), total > 0 {
-                    status.stringValue = "Проверяем запись \(current) из \(total). Неизменившиеся записи берём из истории."
-                }
-            }
-            if lines.last(where: { !$0.isEmpty })?.hasPrefix("Подготовка встроенных фрагментов") == true {
-                status.stringValue = "Готовим отчёт и короткие фрагменты для прослушивания…"
-            }
-        }
+        applyProgress(progressParser.append(data))
     }
+
     private func setBusy(_ value: Bool) {
         folders.isEnabled = !value
         recursive.isEnabled = !value
@@ -399,7 +550,13 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         stop.isEnabled = value && (process != nil || updateProcess != nil)
         report.isEnabled = !value && reportURL != nil
         updateButton.isEnabled = !value && updateAvailable
-        if value { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
+        progress.isHidden = !value
+        if value {
+            progress.isDisplayedWhenStopped = false
+            progress.isIndeterminate = true
+            progress.doubleValue = 0
+            progress.startAnimation(nil)
+        } else { progress.stopAnimation(nil) }
     }
     private func finished(_ result: CheckResult?) {
         process = nil
@@ -410,6 +567,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if !result.output.isEmpty { reportURL = URL(fileURLWithPath: result.output) }
         }
         report.isEnabled = reportURL != nil
+        if logWriteFailed { status.stringValue += " Журнал не сохранён; подробности доступны в этом окне." }
         if quitAfterStop { NSApp.reply(toApplicationShouldTerminate: true) }
     }
     @objc private func cancel() {
@@ -425,6 +583,9 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         process.interrupt()
     }
     @objc private func openReport() { if let reportURL { NSWorkspace.shared.open(reportURL) } }
+    @objc private func openJournal() {
+        if !NSWorkspace.shared.open(checkLogURL) { status.stringValue = "Не удалось открыть журнал. Он сохранён на Mac: \(checkLogURL.path)" }
+    }
     // The updater runs separately from music checking. Checking availability
     // never blocks the window, and installation cannot start while music is busy.
     private func launchUpdateCommand(_ mode: String, completion: @escaping (Data?, Int32) -> Void) throws -> Process {
@@ -558,8 +719,39 @@ if CommandLine.arguments.contains("--self-test") {
     try Data([1]).write(to: file)
     precondition(musicDirectory([root]) == root.standardizedFileURL)
     precondition(musicDirectory([file]) == nil && musicDirectory([]) == nil && musicDirectory([root, root]) == nil)
+    var parser = CheckProgressParser()
+    precondition(parser.append(Data("[1/2] трек.mp3\n".utf8)).last?.percent == nil)
+    let progressLine = Data("[Отчёт 17%] Фрагменты: 2 из 10. трек.mp3 — создание\n".utf8)
+    precondition(parser.append(progressLine.prefix(5)).isEmpty)
+    let progressUpdate = parser.append(progressLine.dropFirst(5))
+    precondition(progressUpdate.last?.percent == 17 && progressUpdate.last?.message.contains("трек.mp3") == true)
+    precondition(parser.append(Data("[2/2] другой.mp3\n".utf8)).isEmpty)
+    precondition(parser.append(Data("[Отчёт 12%] старая строка\n".utf8)).last?.percent == 17)
+    precondition(parser.append(Data("[Отчёт 101%] неверно\n".utf8)).isEmpty)
+    precondition(parser.append(Data("[Отчёт 100%] Отчёт сохранён".utf8)).isEmpty)
+    precondition(parser.append(Data(), finished: true).last?.percent == 100)
+    let logURL = root.appendingPathComponent("logs/last-check.log")
+    let writer = try CheckLogWriter(url: logURL)
+    try writer.append(Data(repeating: 65, count: CheckLogWriter.limit - 10))
+    let lastMessage = Data("\nПоследняя ошибка\n".utf8)
+    try writer.append(Data(repeating: 66, count: CheckLogWriter.limit * 3 / 4))
+    try writer.append(lastMessage)
+    try writer.close()
+    let savedLog = try Data(contentsOf: logURL)
+    precondition(savedLog.count <= CheckLogWriter.limit && savedLog.suffix(lastMessage.count) == lastMessage)
+    let linked = root.appendingPathComponent("original.txt")
+    try Data("original".utf8).write(to: linked)
+    try FileManager.default.removeItem(at: logURL)
+    try FileManager.default.linkItem(at: linked, to: logURL)
+    let replacement = try CheckLogWriter(url: logURL)
+    try replacement.append(Data("new log".utf8))
+    try replacement.close()
+    let originalData = try Data(contentsOf: linked)
+    precondition(originalData == Data("original".utf8))
     let result = try JSONDecoder().decode(CheckResult.self, from: Data("{\"output\":\"/tmp/Отчёт.html\",\"total\":3,\"checked\":2,\"fresh\":1,\"cached\":1,\"errors\":0,\"warnings\":0,\"incomplete\":1,\"interrupted\":true,\"error\":\"\"}".utf8))
     precondition(result.message.contains("Остановлено") && result.message.contains("2 из 3"))
+    let reportStopped = try JSONDecoder().decode(CheckResult.self, from: Data("{\"output\":\"/tmp/report.html\",\"total\":3,\"checked\":3,\"fresh\":1,\"cached\":2,\"errors\":1,\"warnings\":0,\"incomplete\":0,\"interrupted\":true,\"report_interrupted\":true,\"error\":\"\"}".utf8))
+    precondition(reportStopped.message.contains("Подготовка фрагментов остановлена"))
     let earlyStop = CheckResult(output: "", total: 0, checked: 0, fresh: 0, cached: 0, errors: 0, warnings: 0, incomplete: 0, interrupted: true, error: "проверка инструментов: signal: killed")
     precondition(earlyStop.message == "Проверка остановлена. Можно запустить её снова.")
     let denied = CheckResult(output: "", total: 0, checked: 0, fresh: 0, cached: 0, errors: 0, warnings: 0, incomplete: 0, interrupted: false, error: "open /test: operation not permitted")
@@ -577,7 +769,7 @@ if CommandLine.arguments.contains("--self-test") {
     if let path = Bundle.main.url(forResource: "brand", withExtension: "png"), let image = NSImage(contentsOf: path), let rep = image.representations.first {
         precondition(rep.pixelsWide == 192*15 && rep.pixelsHigh == 169*9)
     }
-    print("PASS: выбор одной папки, отклонение файлов, JSON и сообщение об остановке, online/offline/cached обновления.")
+    print("PASS: выбор одной папки, отклонение файлов, JSON и сообщение об остановке, online/offline/cached обновления, проценты отчёта и ограниченный журнал.")
 } else {
     let app = NSApplication.shared
     let delegate = CheckApp()

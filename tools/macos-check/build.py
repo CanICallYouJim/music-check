@@ -10,7 +10,7 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('tools', type=Path, help='Verified amd64/ and arm64/ directories with ffmpeg and ffprobe')
 parser.add_argument('output', type=Path, help='Destination .app')
-parser.add_argument('--version', default='1.0.2')
+parser.add_argument('--version', default='1.0.3')
 parser.add_argument('--engine-source', type=Path, help='Optional isolated Go source tree')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent

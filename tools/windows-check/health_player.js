@@ -28,11 +28,13 @@ const picker = document.getElementById('musicFiles');
 const chooseMusic = document.getElementById('chooseMusic');
 const accessStatus = document.getElementById('accessStatus');
 let selectedFiles = new Map();
+let folderChosen = false;
 let pendingPlay = null;
 let activeFile = null;
 let activeURL = '';
 let startAt = 0;
 let activePreview = '';
+let activePreviewRequest = null;
 
 function audioPath(path) {
   return path.replace(/\\/g, '/').normalize('NFC');
@@ -46,6 +48,7 @@ function resetPlayer() {
   activeURL = '';
   activeFile = null;
   activePreview = '';
+  activePreviewRequest = null;
 }
 
 function chooseFolder() {
@@ -70,21 +73,27 @@ function requestPlayback() {
   });
 }
 
-function playTrack(path, start, label) {
-  const file = selectedFiles.get(audioPath(path));
+const missingPreview = 'Этот фрагмент не подготовлен. Выберите папку с музыкой, чтобы послушать исходную запись.';
+const unreadablePreview = 'Не удалось прочитать встроенный фрагмент. Выберите папку с музыкой, чтобы послушать исходную запись.';
+
+function playTrack(path, start, label, notice = '', allowPicker = true) {
+  const key = audioPath(path);
+  const file = selectedFiles.get(key);
   if (!file) {
-    if (selectedFiles.size === 0) {
-      pendingPlay = {path, start, label};
-      accessStatus.textContent = 'Выберите корневую музыкальную папку, указанную в начале отчёта.';
-      chooseFolder();
-    } else {
-      playing.textContent = 'В выбранной папке не найден файл «' + path +
-        '». Выберите корневую музыкальную папку из отчёта ещё раз.';
-    }
+    const ambiguous = selectedFiles.has(key);
+    playing.textContent = notice || (ambiguous
+      ? 'Найдено несколько подходящих файлов «' + path + '». Выберите саму папку библиотеки, чтобы не перепутать записи.'
+      : folderChosen
+        ? 'В выбранной папке не найден файл «' + path + '». Выберите музыкальную папку из отчёта ещё раз.'
+        : 'Для прослушивания исходной записи выберите папку с музыкой.');
+    accessStatus.textContent = playing.textContent;
+    pendingPlay = {path, start, label, notice};
+    if (allowPicker && (!folderChosen || notice)) chooseFolder();
     return;
   }
+  pendingPlay = null;
   startAt = Number.isFinite(start) && start > 0 ? start : 0;
-  playing.textContent = path + (label ? ' · ' + label : '');
+  playing.textContent = path + (notice ? ' · исходная запись' : '') + (label ? ' · ' + label : '');
   if (activeFile === file && player.readyState >= 1) {
     seekAndPlay();
     return;
@@ -97,6 +106,7 @@ function loadAudio(file) {
   const previousURL = activeURL;
   activeFile = file;
   activePreview = '';
+  activePreviewRequest = null;
   activeURL = URL.createObjectURL(file);
   player.src = activeURL;
   player.load();
@@ -118,30 +128,43 @@ function playPreview(button) {
   try {
     const encoded = document.getElementById(previewID).textContent.trim();
     const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+    if (bytes.length < 4) throw new Error('empty preview');
     loadAudio(new Blob([bytes], {type: 'audio/mpeg'}));
     activePreview = previewID;
+    activePreviewRequest = {path: button.dataset.audioPath, start: absoluteStart, label: button.textContent};
   } catch (_) {
-    playing.textContent = 'Не удалось прочитать встроенный фрагмент. Для прослушивания исходника выберите папку с музыкой.';
+    playTrack(button.dataset.audioPath, absoluteStart, button.textContent, unreadablePreview);
   }
 }
 
-chooseMusic.addEventListener('click', () => {
-  pendingPlay = null;
-  chooseFolder();
-});
+chooseMusic.addEventListener('click', chooseFolder);
 
 picker.addEventListener('change', () => {
   if (picker.files.length === 0) return;
   resetPlayer();
-  const files = new Map();
+  folderChosen = true;
   const wanted = new Set(tracks.map(track => audioPath(track.dataset.path)));
+  const groups = new Map();
   for (const file of picker.files) {
     const relative = audioPath(file.webkitRelativePath || file.name);
-    const separator = relative.indexOf('/');
-    const path = separator >= 0 ? relative.slice(separator + 1) : relative;
-    if (!wanted.has(path)) continue;
-    // Never silently choose between two distinct files with the same key.
-    files.set(path, files.has(path) ? null : file);
+    // Try whole report paths, longest first. Never fall back to just a basename.
+    for (let offset = 0; offset >= 0;) {
+      const path = relative.slice(offset);
+      if (wanted.has(path)) {
+        const prefix = relative.slice(0, offset);
+        if (!groups.has(prefix)) groups.set(prefix, new Map());
+        const group = groups.get(prefix);
+        group.set(path, group.has(path) ? null : file);
+        break;
+      }
+      const separator = relative.indexOf('/', offset);
+      offset = separator < 0 ? -1 : separator + 1;
+    }
+  }
+  const files = groups.size === 1 ? groups.values().next().value : new Map();
+  if (groups.size > 1) {
+    // Multiple library roots cannot safely be combined into one report.
+    for (const group of groups.values()) for (const path of group.keys()) files.set(path, null);
   }
   selectedFiles = files;
   let available = 0;
@@ -150,27 +173,34 @@ picker.addEventListener('change', () => {
   }
   accessStatus.textContent = 'Доступно записей из отчёта: ' + available + ' из ' + tracks.length +
     '. Файлы используются локально в этой странице.';
-  if (available === 0) {
-    accessStatus.textContent += ' Выберите корневую музыкальную папку, указанную в начале отчёта.';
+  if (groups.size > 1 || [...files.values()].some(file => !file)) {
+    accessStatus.textContent += ' Найдено несколько подходящих копий. Выберите саму папку библиотеки, чтобы не перепутать записи.';
+  } else if (available < tracks.length) {
+    accessStatus.textContent += ' Для отсутствующих записей выберите музыкальную папку из отчёта ещё раз.';
   }
   const request = pendingPlay;
   pendingPlay = null;
-  if (request) playTrack(request.path, request.start, request.label);
+  if (request) playTrack(request.path, request.start, request.label, request.notice, false);
 });
 
 picker.addEventListener('cancel', () => { pendingPlay = null; });
 player.addEventListener('loadedmetadata', seekAndPlay);
 player.addEventListener('error', () => {
-  if (activeFile) {
+  if (activePreviewRequest) {
+    const request = activePreviewRequest;
+    resetPlayer();
+    playTrack(request.path, request.start, request.label, unreadablePreview, false);
+  } else if (activeFile) {
     playing.textContent = 'Браузер не смог воспроизвести выбранный файл. Этот формат можно прослушать во внешнем плеере. При изменении файла выберите папку заново.';
   }
 });
 for (const button of document.querySelectorAll('button[data-audio-path]')) {
   button.addEventListener('click', () => {
-    if (button.dataset.previewId && !selectedFiles.get(audioPath(button.dataset.audioPath))) {
+    if (button.dataset.previewId) {
       playPreview(button);
     } else {
-      playTrack(button.dataset.audioPath, Number(button.dataset.start), button.textContent);
+      playTrack(button.dataset.audioPath, Number(button.dataset.start), button.textContent,
+        button.dataset.previewUnavailable === 'true' ? missingPreview : '');
     }
   });
 }

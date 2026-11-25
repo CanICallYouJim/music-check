@@ -15,16 +15,17 @@ import (
 
 // The native Mac window reads this result instead of guessing from console text.
 type checkSummary struct {
-	Output      string `json:"output"`
-	Total       int    `json:"total"`
-	Checked     int    `json:"checked"`
-	Fresh       int    `json:"fresh"`
-	Cached      int    `json:"cached"`
-	Errors      int    `json:"errors"`
-	Warnings    int    `json:"warnings"`
-	Incomplete  int    `json:"incomplete"`
-	Interrupted bool   `json:"interrupted"`
-	Error       string `json:"error"`
+	ReportInterrupted bool   `json:"report_interrupted"`
+	Output            string `json:"output"`
+	Total             int    `json:"total"`
+	Checked           int    `json:"checked"`
+	Fresh             int    `json:"fresh"`
+	Cached            int    `json:"cached"`
+	Errors            int    `json:"errors"`
+	Warnings          int    `json:"warnings"`
+	Incomplete        int    `json:"incomplete"`
+	Interrupted       bool   `json:"interrupted"`
+	Error             string `json:"error"`
 }
 
 func runCheck() error { return runCheckArgs(os.Args[1:]) }
@@ -127,12 +128,12 @@ func runCheckArgs(args []string) (err error) {
 		return err
 	}
 	fmt.Println("Подготовка встроенных фрагментов для прослушивания в отчёте…")
-	output, err := saveHealthReportWithPreviews(ctx, report, t)
+	output, err := saveHealthReportWithPreviews(ctx, report, t, logHealthReportProgress(os.Stdout))
 	if err != nil {
 		return err
 	}
 	stats := healthStats(report)
-	result = checkSummary{Output: output, Total: stats.Total, Checked: stats.Checked, Fresh: stats.Fresh, Cached: stats.Cached, Errors: stats.Errors, Warnings: stats.Warnings, Incomplete: stats.Incomplete, Interrupted: report.Interrupted || ctx.Err() != nil}
+	result = checkSummary{ReportInterrupted: !report.Interrupted && ctx.Err() != nil, Output: output, Total: stats.Total, Checked: stats.Checked, Fresh: stats.Fresh, Cached: stats.Cached, Errors: stats.Errors, Warnings: stats.Warnings, Incomplete: stats.Incomplete, Interrupted: report.Interrupted || ctx.Err() != nil}
 	fmt.Printf("\nНайдено: %d. Проверено: %d. Заново: %d. Из истории: %d.\nТребует внимания: %d. Стоит прослушать: %d. Проверка не закончена: %d.\nОтчёт: %s\n", stats.Total, stats.Checked, stats.Fresh, stats.Cached, stats.Errors, stats.Warnings, stats.Incomplete, output)
 	return nil
 }

@@ -267,7 +267,7 @@ func scanHealth(ctx context.Context, root string, recursive bool, profile string
 			report.Interrupted = true
 			break
 		}
-		fmt.Fprintf(log, "[%d/%d] %s\n", i+1, len(report.Tracks), track.Path)
+		fmt.Fprintf(log, "[%d/%d] %s\n", i+1, len(report.Tracks), strings.NewReplacer("\r", " ", "\n", " ").Replace(track.Path))
 		path := filepath.Join(root, track.Path)
 		before, hashErr := fileFingerprint(ctx, path)
 		if hashErr != nil {

@@ -167,7 +167,9 @@ type reportTrack struct {
 type embeddedHealthPreview struct{ ID, Data string }
 
 type reportView struct {
-	Clips []embeddedHealthPreview
+	Clips                      []embeddedHealthPreview
+	PreviewTotal, PreviewReady int
+	PreviewsInterrupted        bool
 	healthReport
 	RootName, FinishedText string
 	Stats                  reportStats
@@ -180,11 +182,14 @@ func saveHealthReport(report healthReport) (string, error) {
 	return writeHealthReport(context.Background(), report, nil)
 }
 
-func saveHealthReportWithPreviews(ctx context.Context, report healthReport, engines tools) (string, error) {
-	return writeHealthReport(ctx, report, &engines)
+func saveHealthReportWithPreviews(ctx context.Context, report healthReport, engines tools, progress ...func(healthReportProgress)) (string, error) {
+	return writeHealthReport(ctx, report, &engines, progress...)
 }
 
-func writeHealthReport(ctx context.Context, report healthReport, engines *tools) (string, error) {
+func writeHealthReport(ctx context.Context, report healthReport, engines *tools, progress ...func(healthReportProgress)) (string, error) {
+	emit, stop := healthReportNotifier(progress)
+	defer stop()
+	emit(healthReportProgress{Phase: "Составляем список замечаний"})
 	view := reportView{healthReport: report, Stats: healthStats(report), PlayerScript: template.JS(healthPlayerJS), PlaybackControls: template.HTML(healthPlaybackControls)}
 	view.RootName = filepath.Base(report.Root)
 	view.FinishedText = report.Finished
@@ -202,10 +207,23 @@ func writeHealthReport(ctx context.Context, report healthReport, engines *tools)
 		view.Clips = append(view.Clips, embeddedHealthPreview{ID: id, Data: preview.Data})
 		return id
 	}
+
+	type previewUnit struct {
+		target  float64
+		details []int
+	}
+	type previewPlan struct {
+		row   int
+		units []previewUnit
+	}
+	var plans []previewPlan
 	for _, track := range report.Tracks {
 		track.Result = audioOnlyResult(track.Result)
 		status := healthStatus(track.Result)
 		row := reportTrack{healthTrack: track, Status: status, StatusTitle: statusTitle(status), Name: filepath.Base(strings.ReplaceAll(track.Path, "\\", "/")), FullPath: filepath.Join(report.Root, track.Path)}
+		plan := previewPlan{row: len(view.Rows)}
+		ranges := make(map[string]int)
+		visible := false
 		for _, issue := range track.Result.Issues {
 			detail := reportIssue{healthIssue: issue, Title: healthKind(issue.Kind), Visible: issue.Severity != "info" && issue.Kind != "decoder_log"}
 			detail.Explanation, detail.Action = explainHealthIssue(issue, track.Result.Duration)
@@ -216,38 +234,90 @@ func writeHealthReport(ctx context.Context, report healthReport, engines *tools)
 					detail.Time += "–" + timeCode(*issue.End)
 				}
 			}
-			if engines != nil && status != "clean" && status != "incomplete" && issue.Start != nil {
-				preview, err := engines.healthPreview(ctx, report.Root, track, *issue.Start)
-				if err == nil {
-					detail.Preview = preview
-					detail.PreviewRange = timeCode(preview.Start) + "–" + timeCode(preview.End)
-					detail.PreviewID = registerPreview(track, preview)
-				} else {
+			if detail.Visible {
+				visible = true
+			}
+			if engines != nil && status != "clean" && status != "incomplete" && detail.Visible && issue.Start != nil {
+				start, end, err := healthPreviewRange(track.Result.Duration, *issue.Start)
+				if err != nil {
 					detail.PreviewError = err.Error()
+				} else {
+					key := fmt.Sprintf("%.9f/%.9f", start, end)
+					index, ok := ranges[key]
+					if !ok {
+						index = len(plan.units)
+						ranges[key] = index
+						plan.units = append(plan.units, previewUnit{target: *issue.Start})
+					}
+					plan.units[index].details = append(plan.units[index].details, len(row.Details))
 				}
 			}
 			row.Details = append(row.Details, detail)
 		}
-		for _, detail := range row.Details {
-			if detail.Preview.Data != "" {
-				row.Preview = detail.Preview
-				row.PreviewRange = detail.PreviewRange
-				row.PreviewID = detail.PreviewID
-				break
-			}
+		// Only a warning without a timestamp needs a general excerpt. A failed
+		// timestamp excerpt must not trigger another full read of the track.
+		if engines != nil && visible && status != "clean" && status != "incomplete" && len(plan.units) == 0 {
+			plan.units = append(plan.units, previewUnit{target: 0})
 		}
-		if engines != nil && status != "clean" && status != "incomplete" && row.Preview.Data == "" {
-			preview, err := engines.healthPreview(ctx, report.Root, track, 0)
-			if err == nil {
-				row.Preview = preview
-				row.PreviewRange = timeCode(preview.Start) + "–" + timeCode(preview.End)
-				row.PreviewID = registerPreview(track, preview)
-			} else {
-				row.PreviewError = err.Error()
-			}
+		if len(plan.units) > 0 {
+			plans = append(plans, plan)
+			view.PreviewTotal += len(plan.units)
 		}
 		view.Rows = append(view.Rows, row)
 	}
+	done := 0
+	for _, plan := range plans {
+		row := &view.Rows[plan.row]
+		targets := make([]float64, len(plan.units))
+		for i, unit := range plan.units {
+			targets[i] = unit.target
+		}
+		results := engines.healthPreviews(ctx, report.Root, row.healthTrack, targets, func(current, total int, phase string) {
+			count := done + min(current, len(plan.units))
+			percent := 0
+			if view.PreviewTotal > 0 {
+				percent = min(97, 97*count/view.PreviewTotal)
+			}
+			emit(healthReportProgress{Percent: percent, Done: count, Total: view.PreviewTotal, Path: row.Path, Phase: phase})
+		})
+		for i, result := range results {
+			unit := plan.units[i]
+			if result.Err == nil && result.Preview.Data != "" {
+				preview := result.Preview
+				id := registerPreview(row.healthTrack, preview)
+				label := timeCode(preview.Start) + "–" + timeCode(preview.End)
+				view.PreviewReady++
+				for _, index := range unit.details {
+					detail := &row.Details[index]
+					detail.Preview = preview
+					detail.PreviewID = id
+					detail.PreviewRange = label
+				}
+				if row.Preview.Data == "" {
+					row.Preview = preview
+					row.PreviewID = id
+					row.PreviewRange = label
+				}
+			} else {
+				message := "фрагмент не подготовлен"
+				if result.Err != nil {
+					message = result.Err.Error()
+				}
+				for _, index := range unit.details {
+					row.Details[index].PreviewError = message
+				}
+				if row.PreviewError == "" {
+					row.PreviewError = message
+				}
+			}
+		}
+		if row.Preview.Data != "" {
+			row.PreviewError = ""
+		}
+		done += len(plan.units)
+	}
+	view.PreviewsInterrupted = ctx.Err() != nil && view.PreviewReady < view.PreviewTotal
+	emit(healthReportProgress{Percent: 99, Done: done, Total: view.PreviewTotal, Phase: "Сохраняем HTML-отчёт"})
 	// Stable sort keeps alphabetical order within each severity group.
 	ranks := map[string]int{"error": 0, "warning": 1, "incomplete": 2, "clean": 3}
 	sort.SliceStable(view.Rows, func(i, j int) bool { return ranks[view.Rows[i].Status] < ranks[view.Rows[j].Status] })
@@ -277,6 +347,7 @@ func writeHealthReport(ctx context.Context, report healthReport, engines *tools)
 	if err = os.Rename(temp, path); err != nil {
 		return "", err
 	}
+	emit(healthReportProgress{Percent: 100, Done: done, Total: view.PreviewTotal, Phase: "Отчёт сохранён"})
 	return path, nil
 }
 
@@ -298,6 +369,7 @@ var healthTemplate = template.Must(template.New("report").Funcs(template.FuncMap
 <details class="technical"><summary>Подробности для специалиста — папка</summary><p class="path">{{.Root}}</p></details>
 <p>Завершено {{.FinishedText}} · {{if .Recursive}}включая подпапки{{else}}только выбранная папка{{end}}</p>
 {{if .Interrupted}}<p class="notice">Проверка остановлена. Завершённые результаты сохранены. Остальные записи перечислены как не проверенные полностью.</p>{{end}}
+{{if .PreviewTotal}}<p class="notice">{{if .PreviewsInterrupted}}Подготовка фрагментов остановлена. {{end}}Готово фрагментов для прослушивания: {{.PreviewReady}} из {{.PreviewTotal}}.{{if ne .PreviewReady .PreviewTotal}} Результаты проверки сохранены. Для остальных отметок выберите папку с музыкой и слушайте исходные записи; повторный запуск продолжит подготовку с учётом готовых фрагментов.{{end}}</p>{{end}}
 <div class="summary"><p><b>{{.Stats.Checked}}</b>Проверено</p><p><b>{{.Stats.Errors}}</b>Требует внимания</p><p><b>{{.Stats.Warnings}}</b>Стоит прослушать</p><p><b>{{.Stats.Clean}}</b>Без найденных проблем</p></div>
 <p>Всего найдено {{.Stats.Total}}. Проверено заново {{.Stats.Fresh}}, использован прошлый результат для {{.Stats.Cached}}. Проверка не закончена для {{.Stats.Incomplete}}.</p>
 <p>Начните с записей, которые требуют внимания: откройте их и прослушайте отмеченные места. Предупреждение не всегда означает поломку, а проверка не может найти все слышимые дефекты.</p>
@@ -308,7 +380,7 @@ var healthTemplate = template.Must(template.New("report").Funcs(template.FuncMap
 {{range .Rows}}<details class="track {{.Status}}" data-status="{{.Status}}" data-path="{{.Path}}"><summary>{{.Name}}<span class="status">{{.StatusTitle}}</span></summary>
 {{if .Cached}}<p class="meta">Файл не изменился — использован прошлый результат.</p>{{end}}
 {{if eq .Status "incomplete"}}<p>Проверка этой записи не закончена. Запустите её ещё раз, чтобы получить результат.</p>{{end}}
-{{if .Details}}<ul>{{$path:=.Path}}{{range .Details}}{{if .Visible}}<li><strong>{{.Title}}</strong> {{if .Time}}<button type="button" data-audio-path="{{$path}}" data-start="{{.ListenStart}}" {{if .Preview.Data}}data-preview-id="{{.PreviewID}}" data-preview-start="{{.Preview.Start}}" data-preview-range="{{.PreviewRange}}"{{end}}>{{.Time}}</button>{{end}}<p>{{.Explanation}} {{.Action}}</p>{{if .PreviewError}}<p class="notice">Встроенный фрагмент недоступен. Чтобы прослушать запись, выберите папку с музыкой.</p>{{end}}</li>{{end}}{{end}}</ul>{{end}}
+{{if .Details}}<ul>{{$path:=.Path}}{{range .Details}}{{if .Visible}}<li><strong>{{.Title}}</strong> {{if .Time}}<button type="button" data-audio-path="{{$path}}" data-start="{{.ListenStart}}" {{if .Preview.Data}}data-preview-id="{{.PreviewID}}" data-preview-start="{{.Preview.Start}}" data-preview-range="{{.PreviewRange}}"{{else}}data-preview-unavailable="true"{{end}}>{{.Time}}</button>{{end}}<p>{{.Explanation}} {{.Action}}</p>{{if .PreviewError}}<p class="notice">Встроенный фрагмент недоступен. Чтобы прослушать запись, выберите папку с музыкой.</p>{{end}}</li>{{end}}{{end}}</ul>{{end}}
 {{if .PreviewError}}<p class="notice">Встроенный фрагмент недоступен. Чтобы прослушать запись, выберите папку с музыкой.</p>{{end}}
 <p>{{if .Preview.Data}}<button type="button" data-audio-path="{{.Path}}" data-start="{{.Preview.Start}}" data-preview-id="{{.PreviewID}}" data-preview-start="{{.Preview.Start}}" data-preview-range="{{.PreviewRange}}">Прослушать фрагмент {{.PreviewRange}}</button> {{end}}<button type="button" data-audio-path="{{.Path}}" data-start="0">Слушать целиком</button></p>
 <details class="technical"><summary>Подробности для специалиста</summary>
