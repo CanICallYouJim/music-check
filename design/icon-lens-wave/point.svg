@@ -4,7 +4,7 @@
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path stroke="#74f4cf" stroke-width="15" d="M158 156 207 205"/>
     <circle cx="112" cy="110" r="64" stroke="#74f4cf" stroke-width="15"/>
-    <path stroke="#eefafa" stroke-width="9" d="M69 102 C75 102 77 92 83 92 C92 92 93 130 103 130 C113 130 115 82 126 82 C135 82 137 119 146 119 C152 119 153 106 155 102"/>
+    <path stroke="#eefafa" stroke-width="9" d="M69 114 C75 114 77 105 83 105 C90 105 92 123 100 123 C109 123 116 79 126 79 C136 79 135 124 143 124 C149 124 148 110 153 110 C156 110 157 113 158 114"/>
   </g>
-  <circle cx="126" cy="82" r="11" fill="#74f4cf" stroke="#142d3d" stroke-width="4"/>
+  <circle cx="126" cy="79" r="11" fill="#74f4cf" stroke="#142d3d" stroke-width="4"/>
 </svg>
