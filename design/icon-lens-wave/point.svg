@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-  <title id="title">Лупа со звуковой волной и отмеченной точкой</title>
+  <title id="title">Лупа со звуковой волной и точкой на пике</title>
   <rect width="256" height="256" rx="58" fill="#142d3d"/>
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path stroke="#74f4cf" stroke-width="15" d="M158 156 207 205"/>
     <circle cx="112" cy="110" r="64" stroke="#74f4cf" stroke-width="15"/>
-    <path stroke="#eefafa" stroke-width="9" d="M69 110 C75 110 77 120 83 120 C92 120 93 82 103 82 C113 82 115 130 126 130 C135 130 137 93 146 93 C152 93 153 106 155 110"/>
+    <path stroke="#eefafa" stroke-width="9" d="M69 102 C75 102 77 92 83 92 C92 92 93 130 103 130 C113 130 115 82 126 82 C135 82 137 119 146 119 C152 119 153 106 155 102"/>
   </g>
-  <circle cx="126" cy="130" r="11" fill="#74f4cf" stroke="#142d3d" stroke-width="4"/>
+  <circle cx="126" cy="82" r="11" fill="#74f4cf" stroke="#142d3d" stroke-width="4"/>
 </svg>
