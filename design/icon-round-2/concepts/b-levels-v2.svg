@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Music Check — звуковой ритм с завершением</title>
+  <g id="symbol" transform="translate(0 16)" fill="#000000">
+    <rect x="78" y="222" width="36" height="136" rx="18"/>
+    <rect x="158" y="102" width="36" height="256" rx="18"/>
+    <path d="M238 180 A18 18 0 0 1 274 180 V284.54 L304 314.54 L403.27 215.27 A18 18 0 0 1 428.73 240.73 L316.73 352.73 A18 18 0 0 1 291.27 352.73 L243.27 304.73 A18 18 0 0 1 238 292 Z"/>
+  </g>
+</svg>

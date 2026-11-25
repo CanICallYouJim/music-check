@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Music Check — пластинка, найденная и проверенная</title>
+  <g id="symbol" fill="#000000">
+    <path fill-rule="evenodd" d="M 216 88 A 128 128 0 1 1 216 344 A 128 128 0 1 1 216 88 Z M 216 176 A 40 40 0 1 0 216 256 A 40 40 0 1 0 216 176 Z"/>
+    <path d="M 294 312 L 350 368 L 416 302" fill="none" stroke="#000000" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
