@@ -128,7 +128,7 @@ jobs:
           'dist/Music-check.app/Contents/MacOS/MusicCheck' --self-test
           codesign --verify --deep --strict 'dist/Music-check.app'
           for binary in 'Contents/MacOS/MusicCheck' 'Contents/MacOS/music-check-engine' 'Contents/Resources/tools/ffmpeg' 'Contents/Resources/tools/ffprobe'; do
-            lipo -verify_arch x86_64 arm64 "dist/Music-check.app/$binary"
+            lipo "dist/Music-check.app/$binary" -verify_arch x86_64 arm64
           done
       - name: Package update archive
         run: python tools/check-release/package_macos.py 'dist/Music-check.app' dist/Music-check-macOS.zip
