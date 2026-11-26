@@ -10,7 +10,7 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('tools', type=Path, help='Verified amd64/ and arm64/ directories with ffmpeg and ffprobe')
 parser.add_argument('output', type=Path, help='Destination .app')
-parser.add_argument('--version', default='1.0.3')
+parser.add_argument('--version', default='1.0.4')
 parser.add_argument('--engine-source', type=Path, help='Optional isolated Go source tree')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent
@@ -69,7 +69,7 @@ shutil.copyfile(root / 'README.md', resources / 'Инструкция.txt')
 shutil.copyfile(root / 'THIRD-PARTY.md', resources / 'THIRD-PARTY.md')
 shutil.copyfile(root / 'FFmpeg-LICENSE.txt', resources / 'FFmpeg-LICENSE.txt')
 shutil.copyfile(root / 'FFmpeg-build-info.txt', resources / 'FFmpeg-build-info.txt')
-# Generate the icon from the same approved native application icon, with no artwork change.
+# Create the native iconset from the checker's high-resolution icon master.
 iconset = work / 'AppIcon.iconset'
 iconset.mkdir(exist_ok=True)
 for size in [16, 32, 128, 256, 512]:

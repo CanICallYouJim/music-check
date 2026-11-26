@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-var appVersion = "1.0.3"
+var appVersion = "1.0.4"
 var releaseRepository = "CanICallYouJim/music-check"
 
 // Request deadlines are scoped separately: a small manifest must arrive
