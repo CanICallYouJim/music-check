@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,4 +66,17 @@ func reportAppError(explanation, logName string, err error) {
 	text, _ := syscall.UTF16PtrFromString(message)
 	title, _ := syscall.UTF16PtrFromString(appWindowTitle())
 	syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), 0x10)
+}
+
+func startUpdatedGUI(target string) error {
+	releaseGUIInstance()
+	err := startUpdatedApp(target)
+	if err != nil && len(os.Args) == 1 {
+		// A failed handoff must reacquire the lock before the folder session can retry.
+		acquired, lockErr := acquireGUIInstance()
+		if !acquired || lockErr != nil {
+			return errors.Join(err, lockErr, errCancelled)
+		}
+	}
+	return err
 }

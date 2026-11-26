@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 private let ink = NSColor(calibratedRed: 21/255, green: 35/255, blue: 45/255, alpha: 1)
 private let mint = NSColor(calibratedRed: 99/255, green: 215/255, blue: 193/255, alpha: 1)
@@ -41,6 +42,7 @@ func musicDroppedDirectory(_ info: NSDraggingInfo) -> URL? {
 final class FolderView: NSView {
     var accept: ((URL) -> Void)?
     var available: (() -> Bool)?
+    var hover: ((Bool) -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
@@ -50,12 +52,17 @@ final class FolderView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
     private func folder(_ sender: NSDraggingInfo) -> URL? {
         guard available?() == true else { return nil }
-        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        return musicDirectory(urls)
+        return musicDroppedDirectory(sender)
     }
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { folder(sender) == nil ? [] : .copy }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let valid = folder(sender) != nil
+        hover?(valid)
+        return valid ? .copy : []
+    }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func draggingExited(_ sender: NSDraggingInfo?) { hover?(false) }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hover?(false)
         guard let url = folder(sender) else { return false }
         accept?(url)
         return true
@@ -73,6 +80,52 @@ final class FolderBox: NSComboBox {
         guard canDrop?() == true, let folder = musicDroppedDirectory(sender) else { return false }
         accept?(folder)
         return true
+    }
+}
+
+final class FolderDropZone: NSView {
+    private let icon = NSWorkspace.shared.icon(for: .folder)
+    var highlighted = false { didSet { if highlighted != oldValue { refresh() } } }
+    var selected = false { didSet { if selected != oldValue { refresh() } } }
+
+    private var message: String {
+        if highlighted { return "Отпустите, чтобы выбрать" }
+        return selected ? "Папка выбрана" : "Перетащите папку сюда"
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:)") }
+
+    private func refresh() {
+        setAccessibilityLabel(message)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 14, yRadius: 14)
+        let fill = highlighted
+            ? NSColor(calibratedRed: 35/255, green: 71/255, blue: 72/255, alpha: 1)
+            : NSColor(calibratedRed: 25/255, green: 45/255, blue: 55/255, alpha: 1)
+        fill.setFill()
+        outline.fill()
+        (highlighted || selected ? mint : muted).setStroke()
+        outline.lineWidth = highlighted ? 2 : 1
+        if !highlighted && !selected { outline.setLineDash([5, 4], count: 2, phase: 0) }
+        outline.stroke()
+
+        icon.draw(in: NSRect(x: bounds.midX - 63, y: bounds.midY - 51, width: 126, height: 126))
+        let title = message as NSString
+        let style: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 19, weight: .semibold),
+            .foregroundColor: highlighted || selected ? mint : NSColor.white
+        ]
+        title.draw(at: NSPoint(x: bounds.midX - title.size(withAttributes: style).width / 2, y: bounds.midY - 78), withAttributes: style)
     }
 }
 
@@ -102,8 +155,8 @@ final class BrandView: NSView {
         let timer = Timer(timeInterval: 1/60, repeats: true) { [weak self] _ in
             guard let self else { return }
             let elapsed = ProcessInfo.processInfo.systemUptime - self.start
-            if elapsed >= 4.5 { self.reset(); return }
-            self.frameIndex = min(134, Int(elapsed * 30))
+            if elapsed >= 3.5 { self.reset(); return }
+            self.frameIndex = min(104, Int(elapsed * 30))
             self.needsDisplay = true
         }
         self.timer = timer
@@ -261,19 +314,21 @@ final class CheckLogWriter {
     }
 }
 
-final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSComboBoxDelegate {
     private var window: NSWindow!
-    private let folders = FolderBox(frame: NSRect(x: 28, y: 434, width: 486, height: 28))
+    private let folders = FolderBox(frame: NSRect(x: 28, y: 218, width: 486, height: 28))
+    private let dropZone = FolderDropZone(frame: NSRect(x: 28, y: 262, width: 604, height: 222))
     private let recursive = NSButton(checkboxWithTitle: "Включая подпапки", target: nil, action: nil)
-    private let status = NSTextField(wrappingLabelWithString: "Выберите папку и нажмите «Проверить».")
-    private let progress = NSProgressIndicator(frame: NSRect(x: 28, y: 320, width: 604, height: 12))
+    private let status = NSTextField(wrappingLabelWithString: "")
+    private let progress = NSProgressIndicator(frame: NSRect(x: 28, y: 91, width: 604, height: 12))
     private let log = NSTextView()
-    private let scroll = NSScrollView(frame: NSRect(x: 28, y: 112, width: 604, height: 170))
+    private let scroll = NSScrollView(frame: NSRect(x: 28, y: 262, width: 604, height: 222))
     private var browse: NSButton!
     private var start: NSButton!
     private var stop: NSButton!
     private var report: NSButton!
     private var journal: NSButton!
+    private var anotherFolder: NSButton!
     private var process: Process?
     private var reportURL: URL?
     private var pendingFolder: URL?
@@ -306,6 +361,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let root = FolderView(frame: NSRect(x: 0, y: 0, width: 660, height: 600))
         root.available = { [weak self] in self?.busy == false }
         root.accept = { [weak self] in self?.select($0) }
+        root.hover = { [weak self] active in self?.dropZone.highlighted = active }
         window.contentView = root
         updateBanner = NSView(frame: NSRect(x: 20, y: 550, width: 620, height: 38))
         updateBanner.wantsLayer = true
@@ -321,9 +377,10 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateButton.isHidden = true
         updateButton.isEnabled = false
         _ = label("Проверьте музыку перед выступлением", frame: NSRect(x: 28, y: 502, width: 604, height: 36), size: 26, bold: true)
-        _ = label("Оригиналы не меняются. Перетащите папку или выберите из шести последних.", frame: NSRect(x: 28, y: 477, width: 604, height: 22), size: 12, color: muted)
+        root.addSubview(dropZone)
         folders.isEditable = true
         folders.completes = false
+        folders.delegate = self
         folders.numberOfVisibleItems = 6
         folders.setAccessibilityLabel("Папка с музыкой")
         folders.registerForDraggedTypes([.fileURL])
@@ -331,11 +388,12 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         folders.accept = { [weak self] in self?.select($0) }
         root.addSubview(folders)
         refreshFolders()
-        browse = button("Выбрать…", frame: NSRect(x: 526, y: 432, width: 106, height: 32), action: #selector(choose))
-        recursive.frame = NSRect(x: 28, y: 395, width: 300, height: 24)
+        browse = button("Выбрать…", frame: NSRect(x: 526, y: 216, width: 106, height: 32), action: #selector(choose))
+        recursive.frame = NSRect(x: 28, y: 182, width: 300, height: 24)
         recursive.state = .on
         root.addSubview(recursive)
-        status.frame = NSRect(x: 28, y: 342, width: 604, height: 46)
+        _ = label("Отчёт — в подпапке «Проверка музыки».", frame: NSRect(x: 28, y: 154, width: 604, height: 22), size: 12, color: muted)
+        status.frame = NSRect(x: 28, y: 109, width: 604, height: 42)
         status.font = .systemFont(ofSize: 14)
         status.textColor = .white
         root.addSubview(status)
@@ -343,15 +401,15 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         progress.isIndeterminate = true
         progress.isDisplayedWhenStopped = false
         root.addSubview(progress)
-        let details = NSButton(checkboxWithTitle: "Показать технические подробности", target: self, action: #selector(toggleDetails(_:)))
-        details.frame = NSRect(x: 28, y: 288, width: 440, height: 24)
-        root.addSubview(details)
-        journal = button("Открыть журнал", frame: NSRect(x: 490, y: 284, width: 142, height: 30), action: #selector(openJournal))
+        journal = button("Открыть журнал", frame: NSRect(x: 490, y: 180, width: 142, height: 30), action: #selector(openJournal))
         journal.isEnabled = FileManager.default.fileExists(atPath: checkLogURL.path)
         journal.toolTip = "Журнал последней проверки сохраняется на этом Mac, а не на флешке."
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 8
         scroll.isHidden = true
+        scroll.setAccessibilityLabel("Журнал проверки")
         log.isEditable = false
         log.isSelectable = true
         log.isRichText = false
@@ -363,14 +421,18 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         log.isVerticallyResizable = true
         log.textContainer?.widthTracksTextView = true
         log.frame = NSRect(origin: .zero, size: scroll.contentSize)
+        log.minSize = NSSize(width: 0, height: scroll.contentSize.height)
+        log.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = log
         root.addSubview(scroll)
         root.addSubview(BrandView(frame: NSRect(x: 28, y: 22, width: 112, height: 62), resource: Bundle.main.url(forResource: "brand", withExtension: "png")))
-        report = button("Открыть отчёт", frame: NSRect(x: 202, y: 38, width: 160, height: 32), action: #selector(openReport))
+        anotherFolder = button("Другая папка", frame: NSRect(x: 148, y: 38, width: 136, height: 32), action: #selector(showFolderSelection))
+        anotherFolder.isHidden = true
+        report = button("Открыть отчёт", frame: NSRect(x: 288, y: 38, width: 126, height: 32), action: #selector(openReport))
         report.isEnabled = false
-        stop = button("Остановить", frame: NSRect(x: 366, y: 38, width: 116, height: 32), action: #selector(cancel))
+        stop = button("Остановить", frame: NSRect(x: 418, y: 38, width: 108, height: 32), action: #selector(cancel))
         stop.isEnabled = false
-        start = button("Проверить", frame: NSRect(x: 490, y: 38, width: 142, height: 32), action: #selector(check))
+        start = button("Проверить", frame: NSRect(x: 530, y: 38, width: 102, height: 32), action: #selector(check))
         start.keyEquivalent = "\r"
         start.contentTintColor = mint
         let menu = NSMenu()
@@ -417,10 +479,35 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         folders.addItems(withObjectValues: history)
         folders.stringValue = current.isEmpty ? (history.first ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music").path) : current
     }
+    func controlTextDidChange(_ notification: Notification) {
+        dropZone.selected = false
+        if !dropZone.isHidden { status.stringValue = "" }
+    }
+    func comboBoxSelectionDidChange(_ notification: Notification) {
+        let path = folders.objectValueOfSelectedItem as? String ?? ""
+        dropZone.selected = !path.isEmpty && musicDirectory([URL(fileURLWithPath: path)]) != nil
+        if !dropZone.isHidden { status.stringValue = "" }
+    }
     private func select(_ folder: URL) {
         guard !busy else { return }
+        showFolderSelection()
         folders.stringValue = folder.path
+        dropZone.selected = true
         status.stringValue = "Папка выбрана. Нажмите «Проверить»."
+    }
+    @objc private func showFolderSelection() {
+        guard !busy else { return }
+        dropZone.highlighted = false
+        dropZone.selected = false
+        dropZone.isHidden = false
+        scroll.isHidden = true
+        anotherFolder.isHidden = true
+        status.stringValue = ""
+    }
+    private func showWorkLog() {
+        dropZone.isHidden = true
+        scroll.isHidden = false
+        anotherFolder.isHidden = false
     }
     @objc private func choose() {
         guard !busy else { return }
@@ -434,7 +521,6 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if reply == .OK, let url = musicDirectory(panel.urls) { self?.select(url) }
         }
     }
-    @objc private func toggleDetails(_ sender: NSButton) { scroll.isHidden = sender.state != .on }
     @objc private func check() {
         guard !busy else { return }
         let path = (folders.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
@@ -443,6 +529,9 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         guard let resources = Bundle.main.resourceURL, let executable = Bundle.main.executableURL else { return }
+        showWorkLog()
+        logBytes.removeAll()
+        log.string = ""
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("music-check-" + UUID().uuidString)
         do { try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true) }
         catch { status.stringValue = "Не удалось подготовить запуск. Проверьте свободное место и доступ к диску."; appendLog(Data("\(error)\n".utf8)); return }
@@ -454,8 +543,6 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         task.standardOutput = pipe
         task.standardError = pipe
         task.standardInput = FileHandle.nullDevice
-        logBytes.removeAll()
-        log.string = ""
         progressParser = CheckProgressParser()
         logWriteFailed = false
         journal.title = "Открыть журнал"
@@ -547,6 +634,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         recursive.isEnabled = !value
         browse.isEnabled = !value
         start.isEnabled = !value
+        anotherFolder.isEnabled = !value
         stop.isEnabled = value && (process != nil || updateProcess != nil)
         report.isEnabled = !value && reportURL != nil
         updateButton.isEnabled = !value && updateAvailable
@@ -647,6 +735,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     return
                 }
                 if !result.error.isEmpty {
+                    self.showWorkLog()
                     self.appendLog(Data("\(result.error)\n".utf8))
                     self.status.stringValue = exitCode == 2 ? "Загрузка отменена. Текущая версия сохранена." : "Не удалось установить обновление. Причина — в подробностях; текущая версия сохранена."
                     return

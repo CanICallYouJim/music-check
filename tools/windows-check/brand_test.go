@@ -25,9 +25,13 @@ func TestBrandAnimationAsset(t *testing.T) {
 		visible := 0
 		for y := 0; y < height; y++ {
 			for x := 0; x < width; x++ {
-				_, _, _, alpha := sprite.At(ox+x, oy+y).RGBA()
+				pixel := sprite.At(ox+x, oy+y)
+				_, _, _, alpha := pixel.RGBA()
 				if alpha > 0 {
 					visible++
+				}
+				if frame >= 104 && pixel != sprite.At(x, y) {
+					t.Fatalf("frame %d must match the resting pose after the 105-frame loop", frame)
 				}
 			}
 		}
