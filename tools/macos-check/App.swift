@@ -341,7 +341,9 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
     private var versionLabel: NSTextField!
     private var updateBanner: NSView!
     private var updateButton: NSButton!
+    private var updateTimer: Timer?
     private var checkProcess: Process?
+    private let checkCleanup = DispatchGroup()
     private var updateProcess: Process?
     private var updateAvailable = false
     private var cachedTarget = ""
@@ -456,7 +458,12 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        checkForUpdates()
+        checkForUpdates(atLaunch: true)
+        let timer = Timer(timeInterval: 60 * 60, repeats: true) { [weak self] _ in
+            self?.checkForUpdates()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
     }
     @discardableResult private func label(_ text: String, frame: NSRect, size: CGFloat, bold: Bool = false, color: NSColor = .white) -> NSTextField {
         let view = NSTextField(labelWithString: text)
@@ -637,7 +644,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
         anotherFolder.isEnabled = !value
         stop.isEnabled = value && (process != nil || updateProcess != nil)
         report.isEnabled = !value && reportURL != nil
-        updateButton.isEnabled = !value && updateAvailable
+        updateButton.isEnabled = !value && checkProcess == nil && updateAvailable
         progress.isHidden = !value
         if value {
             progress.isDisplayedWhenStopped = false
@@ -676,7 +683,7 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
     }
     // The updater runs separately from music checking. Checking availability
     // never blocks the window, and installation cannot start while music is busy.
-    private func launchUpdateCommand(_ mode: String, completion: @escaping (Data?, Int32) -> Void) throws -> Process {
+    private func launchUpdateCommand(_ mode: String, refresh: Bool = false, completion: @escaping (Data?, Int32) -> Void) throws -> Process {
         guard let executable = Bundle.main.executableURL else {
             throw NSError(domain: "IGUpdater", code: 1, userInfo: [NSLocalizedDescriptionKey: "Не найден движок обновления."])
         }
@@ -686,28 +693,38 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
         let task = Process()
         task.executableURL = executable.deletingLastPathComponent().appendingPathComponent("music-check-engine")
         task.arguments = [mode, "--result", resultURL.path]
+        if refresh { task.arguments?.append("--refresh") }
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
         task.standardInput = FileHandle.nullDevice
         do { try task.run() }
         catch { try? FileManager.default.removeItem(at: temporary); throw error }
+        let cleanup = mode == "--update-status" ? checkCleanup : nil
+        cleanup?.enter()
         DispatchQueue.global(qos: .utility).async {
             task.waitUntilExit()
             let data = try? Data(contentsOf: resultURL)
             try? FileManager.default.removeItem(at: temporary)
+            cleanup?.leave()
             DispatchQueue.main.async { completion(data, task.terminationStatus) }
         }
         return task
     }
-    private func checkForUpdates() {
+    private func checkForUpdates(atLaunch: Bool = false) {
+        guard checkProcess == nil, updateProcess == nil, !openingUpdate, !quitAfterStop else { return }
         do {
-            checkProcess = try launchUpdateCommand("--update-status") { [weak self] data, _ in
+            checkProcess = try launchUpdateCommand("--update-status", refresh: !atLaunch) { [weak self] data, _ in
                 guard let self else { return }
                 self.checkProcess = nil
+                guard !self.quitAfterStop else { return }
+                defer { self.updateButton.isEnabled = self.updateAvailable && !self.busy }
                 guard let data, let update = try? JSONDecoder().decode(UpdateStatus.self, from: data) else {
-                    self.versionLabel.stringValue = "Версия \(self.currentVersion) · Не удалось проверить обновления"
+                    if !self.updateAvailable {
+                        self.versionLabel.stringValue = "Версия \(self.currentVersion) · Не удалось проверить обновления"
+                    }
                     return
                 }
+                if !update.error.isEmpty && self.updateAvailable { return }
                 self.versionLabel.stringValue = versionBanner(update, fallback: self.currentVersion)
                 self.versionLabel.toolTip = update.error.isEmpty ? update.notes : update.error
                 self.cachedTarget = update.target
@@ -715,14 +732,16 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
                 self.updateBanner.isHidden = !self.updateAvailable
                 self.versionLabel.textColor = self.updateAvailable ? mint : muted
                 self.updateButton.isHidden = !self.updateAvailable
-                self.updateButton.isEnabled = self.updateAvailable && !self.busy
                 self.updateButton.title = update.target.isEmpty ? "Обновить" : "Перезапустить"
-                if !update.target.isEmpty && !self.busy { self.openUpdatedApp(update.target) }
+                if atLaunch && !update.target.isEmpty && !self.busy { self.openUpdatedApp(update.target) }
             }
-        } catch { versionLabel.stringValue = "Версия \(currentVersion) · Не удалось проверить обновления" }
+            updateButton.isEnabled = false
+        } catch {
+            if !updateAvailable { versionLabel.stringValue = "Версия \(currentVersion) · Не удалось проверить обновления" }
+        }
     }
     @objc private func installUpdate() {
-        guard !busy, updateAvailable else { return }
+        guard !busy, checkProcess == nil, updateAvailable else { return }
         if !cachedTarget.isEmpty { openUpdatedApp(cachedTarget); return }
         do {
             updateProcess = try launchUpdateCommand("--install-update") { [weak self] data, exitCode in
@@ -780,12 +799,14 @@ final class CheckApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSCombo
         sender.reply(toOpenOrPrint: .success)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { NSApp.terminate(nil); return false }
+    func applicationWillTerminate(_ notification: Notification) {
+        updateTimer?.invalidate()
+        if let checkProcess, checkProcess.isRunning { checkProcess.interrupt() }
+        checkCleanup.wait()
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !openingUpdate else { return .terminateCancel }
-        guard busy else {
-            if let checkProcess, checkProcess.isRunning { checkProcess.interrupt(); checkProcess.waitUntilExit() }
-            return .terminateNow
-        }
+        guard busy else { return .terminateNow }
         if quitAfterStop { return .terminateLater }
         let alert = NSAlert()
         alert.messageText = updateProcess == nil ? "Остановить проверку и закрыть программу?" : "Отменить обновление и закрыть программу?"

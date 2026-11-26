@@ -134,20 +134,22 @@ func chooseFolderDialog(history []string, check bool) (selection string, err err
 	defer os.RemoveAll(temp)
 	result := filepath.Join(temp, "selected.txt")
 	ready := filepath.Join(temp, "ready")
-	updatePath := filepath.Join(temp, "update.json")
-	{
-		ctx, cancel := context.WithCancel(context.Background())
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			status := checkAppUpdate(ctx)
-			if data, e := json.Marshal(status); e == nil {
-				_ = os.WriteFile(updatePath, data, 0600)
+	updatePath := filepath.Join(temp, "update")
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var nextResult int
+		pollAppUpdates(ctx, time.Hour, func(status UpdateStatus) {
+			data, _ := json.Marshal(status)
+			if os.WriteFile(updatePath+".tmp", data, 0600) == nil &&
+				os.Rename(updatePath+".tmp", fmt.Sprintf("%s-%d.json", updatePath, nextResult)) == nil {
+				nextResult++
 			}
-		}()
-		defer func() { cancel(); wg.Wait() }()
-	}
+		})
+	}()
+	defer func() { cancel(); wg.Wait() }()
 	brandImagePath := filepath.Join(temp, "brand.png")
 	brandCodePath := filepath.Join(temp, "BrandControl.cs")
 	if err = os.WriteFile(brandImagePath, brandSprite, 0600); err != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 )
 
 func updateCommand(args []string) (bool, error) {
@@ -16,6 +17,7 @@ func updateCommand(args []string) (bool, error) {
 	}
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	result := flags.String("result", "", "JSON result path")
+	refresh := flags.Bool("refresh", false, "Проверить GitHub при наличии готовой версии")
 	if err := flags.Parse(args[1:]); err != nil {
 		return true, err
 	}
@@ -29,8 +31,16 @@ func updateCommand(args []string) (bool, error) {
 	if args[0] == "--update-status" {
 		target, _ := cachedUpdateTarget()
 		status := UpdateStatus{Current: appVersion}
-		if target == "" {
+		if target == "" || *refresh {
 			status = checkAppUpdate(ctx)
+			if target != "" && status.Available {
+				cachedVersion := filepath.Base(filepath.Dir(target))
+				if newer, _ := newerVersion(status.Latest, cachedVersion); newer {
+					target = ""
+				} else {
+					status.Available = false
+				}
+			}
 		}
 		response = struct {
 			UpdateStatus
